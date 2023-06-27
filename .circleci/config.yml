@@ -1,0 +1,165 @@
+---
+version: 2.1
+
+orbs:
+  terraform: twdps/terraform@0.6.0
+  op: twdps/onepassword@1.0.0
+
+# ==== global pipeline parameters
+
+parameters:
+  terraform-version:
+    description: terraform version for all jobs
+    type: string
+    default: "1.2.2"
+  context:
+    description: circleci context for all jobs
+    type: string
+    default: cohorts
+  executor-image:
+    description: image to use for terraform runs
+    type: string
+    default: twdps/circleci-infra-aws:alpine-stable
+
+# git push: run plan
+on-push-main: &on-push-main
+  branches:
+    only: /main/
+  tags:
+    ignore: /.*/
+
+# git tag: release - apply
+on-tag-main: &on-tag-main
+  branches:
+    ignore: /.*/
+  tags:
+    only: /.*/
+
+commands:
+  set-environment:
+    description: generate environment credentials and configuration from templates
+    parameters:
+      tenant:
+        description: target grafana tenant
+        type: string
+      source-env:
+        description: file to source to BASH_ENV
+        type: string
+    steps:
+      - op/env:
+          env-file: << parameters.source-env >>
+      - run:
+          name: write << parameters.tenant >>.auto.tfvars.json from template
+          command: op inject -i environments/<< parameters.tenant >>.auto.tfvars.json.tpl -o << parameters.tenant >>.auto.tfvars.json
+      - run:
+          name: set ~/.terraformrc
+          command: op inject -i tpl/terraformrc.tpl -o ~/.terraformrc
+
+jobs:
+  validate-and-store-service-token:
+    description: |
+      bats tests of the resulting grafana tenant resources and write the service accounts
+      token when successful during create_grafana_stack run.
+    docker:
+      - image: << pipeline.parameters.executor-image >>
+    shell: << parameters.shell >>
+    parameters:
+      tenant:
+        description: target grafana tenant
+        type: string
+        default: ""
+      shell:
+        description: shell option directive
+        type: string
+        default: /bin/bash -eo pipefail
+      source-env:
+        description: env file to source to BASH_ENV
+        type: string
+      test-only:
+        description: run validation only without writing credentials
+        type: boolean
+        default: false
+    steps:
+      - checkout
+      - setup_remote_docker
+      - set-environment:
+          tenant: << parameters.tenant >>
+          source-env: << parameters.source-env >>
+      - run:
+          name: test << parameters.tenant >> configuration
+          command: bash scripts/test_configuration.sh << parameters.tenant >>
+#      - when:
+#          condition:
+#            -equal: [ << parameters.test-only >>, false]
+#          steps:
+#            - run:
+#                name: write service account token
+#                command: bash scripts/write_stack_data.sh << parameters.tenant >>
+
+workflows:
+  version: 2
+
+  deploy-grafana-stack-prod:
+    jobs:
+      - terraform/plan:
+          name: grafana stack change plan
+          context: << pipeline.parameters.context >>
+          shell: op run --env-file op.env -- /bin/bash -eo pipefail
+          workspace: prod
+          terraform-version: << pipeline.parameters.terraform-version >>
+          before-terraform:
+            - set-environment:
+                tenant: prod
+                source-env: op.env
+          filters: *on-push-main
+      - approve stack:
+          type: approval
+          requires:
+            - grafana stack change plan
+          filters: *on-push-main
+      - terraform/apply:
+          name: grafana stack release
+          context: << pipeline.parameters.context >>
+          shell: op run --env-file op.env -- /bin/bash -eo pipefail
+          workspace: prod
+          terraform-version: << pipeline.parameters.terraform-version >>
+          before-terraform:
+            - set-environment:
+                tenant: prod
+                source-env: op.env
+          requires:
+            - approve stack
+          filters: *on-push-main
+      - validate-and-store-service-token:
+          name: test prod grafana tenant
+          context: << pipeline.parameters.context >>
+          tenant: prod
+          source-env: op.env
+          requires:
+            - grafana stack release
+          filters: *on-push-main
+
+    # generate-release-notes:
+  #   jobs:
+  #     - executor-tools/release:
+  #         name: release-cohort-base-team-creation
+  #         context: << pipeline.parameters.context >>
+  #         shell: << pipeline.parameters.shell-options >>
+  #         on-tag: true
+  #         filters: *on-tag-main
+
+#  nightly grafana stack configuration validation:
+#    triggers:
+#      - schedule:
+#          cron: "0 1 * * *"
+#          filters:
+#            branches:
+#              only:
+#                - main
+#    jobs:
+#      - validate-and-store-service-token:
+#          name: nightly prod grafana stack validation
+#          context: << pipeline.parameters.context >>
+#          tenant: prod
+#          source-env: op.env
+#          test-only: true
