@@ -1,5 +1,5 @@
 {
-    "org_name": "marksinclair",
+    "org_name": "team1201stack",
     "team_name": "team1",
     "stack_name": "team1201stack",
     "stack_slug": "team1201stack",
