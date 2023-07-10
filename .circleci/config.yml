@@ -88,13 +88,13 @@ jobs:
       - run:
           name: test << parameters.tenant >> configuration
           command: bash scripts/test_configuration.sh << parameters.tenant >>
-#      - when:
-#          condition:
-#            -equal: [ << parameters.test-only >>, false]
-#          steps:
-#            - run:
-#                name: write service account token
-#                command: bash scripts/write_stack_data.sh << parameters.tenant >>
+      - when:
+          condition:
+            equal: [<< parameters.test-only >>, false]
+          steps:
+            - run:
+                name: write service account token
+                command: bash scripts/write_stack_data.sh << parameters.tenant >>
 
 workflows:
   version: 2
@@ -147,7 +147,6 @@ workflows:
   #         shell: << pipeline.parameters.shell-options >>
   #         on-tag: true
   #         filters: *on-tag-main
-
 #  nightly grafana stack configuration validation:
 #    triggers:
 #      - schedule:
